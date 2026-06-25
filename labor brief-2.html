@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>노동 이슈 브리핑</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Malgun Gothic', sans-serif; background: #f4f5f7; color: #1a1a2e; min-height: 100vh; }
+header { background: #1c4e80; color: white; padding: 24px 40px; display: flex; align-items: center; justify-content: space-between; }
+header h1 { font-size: 20px; font-weight: 600; }
+header span { font-size: 13px; opacity: 0.7; }
+.container { max-width: 860px; margin: 40px auto; padding: 0 24px; }
+.card { background: white; border-radius: 12px; padding: 28px; margin-bottom: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+.card h2 { font-size: 14px; color: #555; margin-bottom: 16px; }
+input[type="password"] { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; font-family: monospace; }
+.btn { background: #1c4e80; color: white; border: none; padding: 12px 28px; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; width: 100%; margin-top: 12px; }
+.btn:hover { background: #163d66; }
+.btn:disabled { background: #aaa; cursor: not-allowed; }
+.status { text-align: center; padding: 20px; font-size: 14px; color: #666; display: none; }
+.status.on { display: block; }
+.spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ddd; border-top-color: #1c4e80; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 8px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.result { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); display: none; }
+.result.on { display: block; }
+.result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 2px solid #f0f0f0; }
+.result-header h2 { font-size: 17px; color: #1c4e80; }
+.result-header .date { font-size: 13px; color: #888; }
+.result-body { font-size: 14px; line-height: 1.9; white-space: pre-wrap; color: #2c2c3e; }
+.star { color: #e03131; }
+.copy-btn { background: #f4f5f7; border: 1px solid #ddd; padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; margin-top: 20px; }
+.error { background: #fff5f5; border: 1px solid #ffc9c9; border-radius: 8px; padding: 16px; font-size: 14px; color: #c92a2a; display: none; margin-top: 12px; }
+.error.on { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗞️ 노동 이슈 일일 브리핑</h1>
+  <span id="today"></span>
+</header>
+<div class="container">
+  <div class="card">
+    <h2>설정</h2>
+    <input type="password" id="apikey" placeholder="Gemini API 키 입력 (AIza...)">
+    <div style="margin-top:10px;font-size:12px;color:#999;">스크랩 URL: http://mnc.scrapmaster.co.kr/v1_6/mb_list.php?id=molab&flag=0</div>
+    <button class="btn" id="btn" onclick="run()">분석 시작</button>
+    <div class="error" id="err"></div>
+  </div>
+  <div class="status" id="status"><span class="spinner"></span><span id="msg">수집 중...</span></div>
+  <div class="result" id="result">
+    <div class="result-header">
+      <h2>📋 오늘의 노동 이슈 브리핑</h2>
+      <span class="date" id="rdate"></span>
+    </div>
+    <div class="result-body" id="body"></div>
+    <button class="copy-btn" onclick="copy()">📋 결과 복사</button>
+  </div>
+</div>
+<script>
+var PROXY = 'https://corsproxy.io/?';
+var SCRAP = 'http://mnc.scrapmaster.co.kr/v1_6/mb_list.php?id=molab&flag=0';
+
+var today = new Date();
+var dateStr = today.toLocaleDateString('ko-KR', {year:'numeric',month:'long',day:'numeric',weekday:'long'});
+document.getElementById('today').textContent = dateStr;
+document.getElementById('rdate').textContent = dateStr;
+
+function setMsg(m) {
+  document.getElementById('msg').textContent = m;
+  document.getElementById('status').className = 'status on';
+}
+function showErr(m) {
+  var e = document.getElementById('err');
+  e.textContent = '⚠️ ' + m;
+  e.className = 'error on';
+}
+function clearErr() {
+  document.getElementById('err').className = 'error';
+}
+
+async function fetchProxy(url) {
+  var res = await fetch(PROXY + encodeURIComponent(url));
+  var json = await res.json();
+  return json.contents;
+}
+
+function parseList(html) {
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(html, 'text/html');
+  var links = doc.querySelectorAll('a.reduce');
+  var articles = [];
+  for (var i = 0; i < links.length; i++) {
+    var a = links[i];
+    var title = a.textContent.trim();
+    var href = a.getAttribute('href');
+    if (!title || title.length < 5) continue;
+    if (href.startsWith('./')) {
+      href = 'http://mnc.scrapmaster.co.kr/v1_6/' + href.slice(2);
+    } else if (href.startsWith('/')) {
+      href = 'http://mnc.scrapmaster.co.kr' + href;
+    }
+    articles.push({title: title, url: href});
+  }
+  return articles.slice(0, 25);
+}
+
+async function fetchBody(url) {
+  try {
+    var html = await fetchProxy(url);
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(html, 'text/html');
+    var sels = ['article','.article-body','#articleBody','#article-view-content-div','.news_content','.article_body'];
+    for (var i = 0; i < sels.length; i++) {
+      var el = doc.querySelector(sels[i]);
+      if (el && el.textContent.trim().length > 100) {
+        return el.textContent.trim().slice(0, 1500);
+      }
+    }
+    var ps = Array.from(doc.querySelectorAll('p')).map(function(p){ return p.textContent.trim(); }).filter(function(t){ return t.length > 30; });
+    return ps.slice(0, 6).join('\n').slice(0, 1500);
+  } catch(e) {
+    return '';
+  }
+}
+
+async function summarize(articles, apiKey) {
+  var content = articles.map(function(a, i){
+    return '[기사 ' + (i+1) + '] ' + a.title + '\n출처: ' + a.url + '\n' + a.body;
+  }).join('\n\n---\n\n');
+
+  var prompt = '당신은 노동법 전문 리서처입니다.\n아래는 오늘(' + dateStr + ') 수집된 노동 관련 기사들입니다.\n법률 실무자와 정책 담당자가 빠르게 파악할 수 있도록 요약해주세요.\n\n【요약 형식】\n1. 주제별로 기사를 분류하고 각 주제를 3~5문장으로 요약\n   - 주제: 임금·수당 / 해고·고용 / 산업안전·재해 / 노사관계·파업 / 소상공인·자영업 / 정책·입법 / 판례·행정해석 / 외국인 노동 / 기타\n2. 특히 주목할 기사에는 ★ 표시\n3. 오늘의 노동 이슈 총평 (3문장 이내)\n\n---\n' + content;
+
+  var res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + apiKey, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      contents: [{parts: [{text: prompt}]}],
+      generationConfig: {maxOutputTokens: 3000, temperature: 0.3}
+    })
+  });
+
+  if (!res.ok) {
+    var err = await res.json();
+    throw new Error(err.error ? err.error.message : 'Gemini API 오류');
+  }
+  var data = await res.json();
+  return data.candidates[0].content.parts[0].text;
+}
+
+async function run() {
+  var apiKey = document.getElementById('apikey').value.trim();
+  if (!apiKey) { showErr('API 키를 입력해주세요.'); return; }
+  clearErr();
+  document.getElementById('btn').disabled = true;
+  document.getElementById('result').className = 'result';
+
+  try {
+    setMsg('📡 기사 목록 수집 중...');
+    var listHtml = await fetchProxy(SCRAP);
+    var articles = parseList(listHtml);
+
+    if (articles.length === 0) {
+      throw new Error('기사 목록을 찾지 못했습니다.');
+    }
+
+    for (var i = 0; i < articles.length; i++) {
+      setMsg('📰 본문 수집 중... (' + (i+1) + '/' + articles.length + ')');
+      articles[i].body = await fetchBody(articles[i].url);
+      await new Promise(function(r){ setTimeout(r, 400); });
+    }
+
+    var valid = articles.filter(function(a){ return a.body.length > 50; });
+    setMsg('✍️ Gemini가 ' + valid.length + '건 요약 중...');
+
+    var summary = await summarize(valid, apiKey);
+
+    document.getElementById('status').className = 'status';
+    var bodyEl = document.getElementById('body');
+    bodyEl.innerHTML = summary.replace(/★/g, '<span class="star">★</span>');
+    document.getElementById('result').className = 'result on';
+
+  } catch(e) {
+    document.getElementById('status').className = 'status';
+    showErr(e.message);
+  } finally {
+    document.getElementById('btn').disabled = false;
+  }
+}
+
+function copy() {
+  var text = document.getElementById('body').textContent;
+  navigator.clipboard.writeText(text).then(function(){ alert('복사되었습니다!'); });
+}
+</script>
+</body>
+</html>
